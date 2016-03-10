@@ -1,5 +1,3 @@
 module PlinkPlumber
-
-# package code goes here
-
+	include("plink.jl")
 end # module
