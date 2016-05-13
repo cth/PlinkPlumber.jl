@@ -314,7 +314,7 @@ function Base.show(io::IO,x::BiallelicVariant)
 	end
 end
 
-function read_map_file(mapfile)
+function map_readfile(mapfile)
 	markers_info = Array{BiallelicVariantInfo,1}()
 	open(mapfile) do mapf
 		for line in eachline(mapf)
@@ -325,27 +325,66 @@ function read_map_file(mapfile)
 	return markers_info
 end
 
+function read_bim_file(bimfile)
+	markers_info = Array{BiallelicVariantInfo,1}()
+	open(bimfile) do bimf
+		for line in eachline(bimf)
+			chr,snpname,cm,pos,a1,a2 = split(chomp(line),[' ','\t'])
+			push!(markers_info,BiallelicVariantInfo(chr,snpname,parse(Int32,cm),parse(Int32,pos),a1,a2,0,0))
+		end
+	end
+	return markers_info
+end
+
+# With a dict we temporary relax constraints of equal number of colums per row
+fam_dict() = Dict(
+	:FID =>  data(Array{ASCIIString,1}()),
+	:IID =>  data(Array{ASCIIString,1}()),
+	:PaternalID =>  data(Array{ASCIIString,1}()),
+	:MaternalID =>  data(Array{ASCIIString,1}()),
+	:Sex => data(Array{Int8,1}()),
+	:Phenotype => data(Array{Int8,1}()))
+
+function fam_push!(fam::Dict, fields)
+			push!(fam[:FID], shift!(fields))
+			push!(fam[:IID], shift!(fields))
+			push!(fam[:PaternalID], shift!(fields))
+			push!(fam[:MaternalID], shift!(fields))
+			push!(fam[:Sex], parse(Int8,shift!(fields)))
+			push!(fam[:Phenotype], parse(Int8,shift!(fields)))
+end
+
+function fam_dataframe(dict::Dict) 
+	df = DataFrame(fam_dict) 
+	for id in keys(fam)
+		df[df[id].==-9] = NA
+	end
+	return df
+end
+
+function fam_readfile(famfile)
+	fam=fam_dict() 
+	open(famfile) do f
+		for line in eachline(f)
+			fields = split(chomp(line),[' ','\t'])
+			@assert 6==length(fields) "$famfile malformed on line $line $famfile"
+			fam_push!(fam,fields)
+		end
+	end
+	return fam_dataframe(fam)
+end
+
 function dataframe(p::PlinkFile) 
-	markers_info = read_map_file(p.map)
+	markers_info = map_readfile(p.map)
 
 	markers = Array{DataArray{BiallelicVariant,1},1}()
-
-	family_id = data(Array{ASCIIString,1}()) 
-	individual_id = data(Array{ASCIIString,1}()) 
-	paternal_id = data(Array{ASCIIString,1}())
-	maternal_id = data(Array{ASCIIString,1}())
-	sex = data(Array{Int8,1}())
-	phenotype = data(Array{Int8,1}())
+	fam=fam_dict()
 
 	open(p.ped) do ped
 		for line in eachline(ped) 
 			fields = split(chomp(line),[' ','\t'])
-			push!(family_id,shift!(fields))
-			push!(individual_id,shift!(fields))
-			push!(paternal_id,shift!(fields))
-			push!(maternal_id,shift!(fields))
-			push!(sex, parse(Int8,shift!(fields)))
-			push!(phenotype, parse(Int8,shift!(fields)))
+			fam_push!(fam,fields)
+
 			for i in 1:length(markers_info)
 				a1=shift!(fields)
 				a2=shift!(fields)
@@ -382,17 +421,7 @@ function dataframe(p::PlinkFile)
 		end
 	end
 
-	df = DataFrame()
-	df[:FID] = family_id
-	df[:IID] = individual_id
-	df[:PaternalID] = paternal_id 
-	df[df[:PaternalID].==-9] = NA
-	df[:MaternalID] = maternal_id 
-	df[df[:MaternalID].==-9] = NA
-	df[:Sex] = sex
-	df[df[:Sex].==-9] = NA
-	df[:Pheno] = phenotype
-	df[df[:Pheno].==-9] = NA
+	df = fam_dataframe(fam)
 
 	for i in 1:length(markers)
 		df[Symbol(markers_info[i].name)] = markers[i] 
@@ -401,7 +430,19 @@ function dataframe(p::PlinkFile)
 	return df
 end
 
-dataframe(p::PlinkBinaryFile) = error("Not implemented yet")
+function dataframe(p::PlinkBinaryFile)
+	bed=open(p,"r")
+	magic = readbytes(3)
+	@assert magic[1] == [0x6c, 0x1b, 0x01] "magic header in .bed file does not look like a binary plink file"
+	markers_info = map_readfile(p.map)
+	fam = fam_readfile(p.fam)
+
+	markers = Array{DataArray{BiallelicVariant,1},1}()
+
+end
+
+#dataframe(p::PlinkBinaryFile) = error("Not implemented yet")
+
 dataframe(p::PlinkVCF) = error("Not implemented yet")
 
 function dataframe(p::PlinkOps)
