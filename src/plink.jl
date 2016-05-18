@@ -309,8 +309,10 @@ function Base.show(io::IO,x::BiallelicVariant)
 		print(io, string(x.info.a1,"/",x.info.a1))
 	elseif (x.genotype==1) 
 		print(io, string(x.info.a1,"/",x.info.a2))
+	elseif (x.genotype==2)
+		print(io, string(x.info.a2,"/",x.info.a2))
 	else
-		print(io, string(x.info.a1,"/",x.info.a2))
+		"??"
 	end
 end
 
@@ -325,7 +327,7 @@ function map_readfile(mapfile)
 	return markers_info
 end
 
-function read_bim_file(bimfile)
+function bim_readfile(bimfile)
 	markers_info = Array{BiallelicVariantInfo,1}()
 	open(bimfile) do bimf
 		for line in eachline(bimf)
@@ -346,18 +348,18 @@ fam_dict() = Dict(
 	:Phenotype => data(Array{Int8,1}()))
 
 function fam_push!(fam::Dict, fields)
-			push!(fam[:FID], shift!(fields))
-			push!(fam[:IID], shift!(fields))
-			push!(fam[:PaternalID], shift!(fields))
-			push!(fam[:MaternalID], shift!(fields))
-			push!(fam[:Sex], parse(Int8,shift!(fields)))
-			push!(fam[:Phenotype], parse(Int8,shift!(fields)))
+	push!(fam[:FID], shift!(fields))
+	push!(fam[:IID], shift!(fields))
+	push!(fam[:PaternalID], shift!(fields))
+	push!(fam[:MaternalID], shift!(fields))
+	push!(fam[:Sex], parse(Int8,shift!(fields)))
+	push!(fam[:Phenotype], parse(Int8,shift!(fields)))
 end
 
 function fam_dataframe(dict::Dict) 
-	df = DataFrame(fam_dict) 
-	for id in keys(fam)
-		df[df[id].==-9] = NA
+	df = DataFrame(dict) 
+	for id in keys(dict)
+		df[id] = map(i -> (i==-9 ? NA : i), df[id])
 	end
 	return df
 end
@@ -371,6 +373,7 @@ function fam_readfile(famfile)
 			fam_push!(fam,fields)
 		end
 	end
+	println(fam)
 	return fam_dataframe(fam)
 end
 
@@ -430,15 +433,61 @@ function dataframe(p::PlinkFile)
 	return df
 end
 
-function dataframe(p::PlinkBinaryFile)
-	bed=open(p,"r")
-	magic = readbytes(3)
-	@assert magic[1] == [0x6c, 0x1b, 0x01] "magic header in .bed file does not look like a binary plink file"
-	markers_info = map_readfile(p.map)
+function byte_to_geno(byte)
+	map(0:3) do pos
+		(byte >> (2*pos)) & 3
+	end
+end
+
+
+function readplink(p::PlinkBinaryFile)
+	markers_info = bim_readfile(p.bim)
+	println(string("read bim file ",p.bim, " - expecting ", length(markers_info), " variants"))
 	fam = fam_readfile(p.fam)
-
+	println(string("read fam file ",p.bim, " - expecting ", nrow(fam), " individuals"))
 	markers = Array{DataArray{BiallelicVariant,1},1}()
+	
+	# The first three bytes should be 0x6c, 0x1b, and 0x01 in that order. 
+	bed=open(p.bed,"r")
+	magic = readbytes(bed,3)
 
+	@assert magic == [0x6c, 0x1b, 0x01] "magic header in .bed file does not look like a binary plink file"
+
+	# The rest of the file is a sequence of V blocks of N/4 (rounded up) bytes each
+	# where V is the number of variants and N is the number of samples. 
+	# The first block corresponds to the first marker in the .bim file, etc.
+	for mkr in markers_info
+		last_byte_samples = nrow(fam) % 4 
+		ablock = readbytes(bed,Integer(ceil(nrow(fam)/4)))
+		four_sample_blocks = map(byte_to_geno,ablock)
+		if last_byte_samples != 0
+			for i in 1:(4-last_byte_samples)
+				pop!(last(four_sample_blocks))
+			end
+		end
+
+		genotypes=reduce(vcat,[],four_sample_blocks)
+		
+		push!(markers,DataArray{BiallelicVariant,1}[])
+		for geno in genotypes
+			if (geno == 0)
+				push!(markers[end],BiallelicVariant(mkr,0))
+			elseif (geno == 1)
+				push!(markers[end],NA)
+			elseif (geno == 2)
+				push!(markers[end],BiallelicVariant(mkr,1))
+			elseif (geno == 3)
+				push!(markers[end],BiallelicVariant(mkr,2))
+			end
+		end
+	end
+	close(bed)
+
+	for i in 1:length(markers)
+		fam[Symbol(markers_info[i].name)] = markers[i] 
+	end
+
+	return fam
 end
 
 #dataframe(p::PlinkBinaryFile) = error("Not implemented yet")
