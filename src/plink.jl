@@ -1,5 +1,11 @@
-using Pipe
 using DataFrames
+
+
+"""
+Returns the version of Plink associated with the command `plink`
+"""
+plink_version() = parse(Float64,match(r"PLINK\D+v([\d\.]+)",readall(`plink --help`))[1])
+
 
 abstract PlinkOps
 abstract PlinkInput <: PlinkOps
@@ -300,6 +306,9 @@ type BiallelicVariantInfo
 end
 
 type BiallelicVariant
+	# This is going to require a full-size pointer, and will
+	# cause significant overhead. I wonder if it can be done
+	# better using parametric types
 	info::BiallelicVariantInfo
 	genotype::Int8
 end
@@ -314,6 +323,24 @@ function Base.show(io::IO,x::BiallelicVariant)
 	else
 		"??"
 	end
+end
+
+type Sex
+		code::Int8
+end
+
+unknown_sex() = Sex(0)
+male() = Sex(1)
+female() = Sex(2)
+
+function Base.show(io::IO,x::SexCode) 
+		if (x.code == 1)
+				print(io, "male")
+		elseif(x.code == 2)
+				print(io, "female")
+		else(x.code == 0)
+			print(io,"unknown")	
+		end
 end
 
 each_trimmed_nonempty_line(io::IOStream) = filter(l->l!="", map(l->chomp(lstrip(l)), eachline(io)))
@@ -348,7 +375,7 @@ fam_dict() = Dict(
 	:IID =>  data(Array{ASCIIString,1}()),
 	:PaternalID =>  data(Array{ASCIIString,1}()),
 	:MaternalID =>  data(Array{ASCIIString,1}()),
-	:Sex => data(Array{Int8,1}()),
+	:Sex => data(Array{Sex,1}()),
 	:Phenotype => data(Array{Int8,1}()))
 
 function fam_push!(fam::Dict, fields)
@@ -356,7 +383,7 @@ function fam_push!(fam::Dict, fields)
 	push!(fam[:IID], shift!(fields))
 	push!(fam[:PaternalID], shift!(fields))
 	push!(fam[:MaternalID], shift!(fields))
-	push!(fam[:Sex], parse(Int8,shift!(fields)))
+	push!(fam[:Sex], Sex(parse(Int8,shift!(fields))))
 	push!(fam[:Phenotype], parse(Int8,shift!(fields)))
 end
 
@@ -450,7 +477,7 @@ function readplink(p::PlinkBinaryFile)
 
 	# The first three bytes should be 0x6c, 0x1b, and 0x01 in that order. 
 	bed=open(p.bed,"r")
-	magic = readbytes(bed,3)
+	magic = readbytes(bed,)
 
 	@assert magic == [0x6c, 0x1b, 0x01] "magic header in .bed file does not look like a binary plink file"
 
@@ -490,6 +517,20 @@ function readplink(p::PlinkBinaryFile)
 
 	return fam
 end
+
+"""
+Write "plink dataframe" to a binary plink file
+"""
+#function writeplink(plink::DataFrame)
+#	fam_only = plink[:,[:FID,:IID,:PaternalID,:MaternalID,:Sex,:Phenotype]]	
+#	println(fam_only)
+#
+#	nrow(plink)
+#	
+#fam_only	
+#
+#	fam_only
+#end
 
 #dataframe(p::PlinkBinaryFile) = error("Not implemented yet")
 
