@@ -316,11 +316,15 @@ function Base.show(io::IO,x::BiallelicVariant)
 	end
 end
 
+each_trimmed_nonempty_line(io::IOStream) = filter(l->l!="", map(l->chomp(lstrip(l)), eachline(io)))
+getfields(line) = filter(x->x!="",split(chomp(lstrip(line)),[' ','\t']))
+
 function map_readfile(mapfile)
+	println(readall(mapfile))
 	markers_info = Array{BiallelicVariantInfo,1}()
 	open(mapfile) do mapf
-		for line in eachline(mapf)
-			chr,snpname,cm,pos = split(chomp(line),[' ','\t'])
+		for line in each_trimmed_nonempty_line(mapf)
+			chr,snpname,cm,pos = getfields(line)
 			push!(markers_info,BiallelicVariantInfo(chr,snpname,parse(Int32,cm),parse(Int32,pos),"","",0,0))
 		end
 	end
@@ -330,8 +334,8 @@ end
 function bim_readfile(bimfile)
 	markers_info = Array{BiallelicVariantInfo,1}()
 	open(bimfile) do bimf
-		for line in eachline(bimf)
-			chr,snpname,cm,pos,a1,a2 = split(chomp(line),[' ','\t'])
+		for line in each_trimmed_nonempty_line(bimf)
+			chr,snpname,cm,pos,a1,a2 = getfields(line)
 			push!(markers_info,BiallelicVariantInfo(chr,snpname,parse(Int32,cm),parse(Int32,pos),a1,a2,0,0))
 		end
 	end
@@ -367,50 +371,47 @@ end
 function fam_readfile(famfile)
 	fam=fam_dict() 
 	open(famfile) do f
-		for line in eachline(f)
-			fields = split(chomp(line),[' ','\t'])
+		for line in each_trimmed_nonempty_line(f)
+			fields = getfields(line)
 			@assert 6==length(fields) "$famfile malformed on line $line $famfile"
 			fam_push!(fam,fields)
 		end
 	end
-	println(fam)
 	return fam_dataframe(fam)
 end
 
-function dataframe(p::PlinkFile) 
+function readplink(p::PlinkFile) 
 	markers_info = map_readfile(p.map)
 
 	markers = Array{DataArray{BiallelicVariant,1},1}()
 	fam=fam_dict()
 
 	open(p.ped) do ped
-		for line in eachline(ped) 
-			fields = split(chomp(line),[' ','\t'])
+		for line in each_trimmed_nonempty_line(ped) 
+			fields = getfields(line)
+
 			fam_push!(fam,fields)
 
 			for i in 1:length(markers_info)
 				a1=shift!(fields)
 				a2=shift!(fields)
 
-				if markers_info[i].a1 == "" && a1 != "0"
-					markers_info[i].a1 = a1	
+				if (a1!="0") 
+					if markers_info[i].a1 == ""
+						markers_info[i].a1 = a1	
+					end
+
+					if markers_info[i].a2 == ""  && (a1 != a2 || a1!=markers_info[i].a1)
+						if markers_info[i].a1 == a1
+							markers_info[i].a2 = a2
+						else
+							markers_info[i].a2 = a1
+						end
+					end
 				end
 
-				if markers_info[i].a2 == "" && a2 != "0"
-					markers_info[i].a2 = a2
-				end
-
-				genotype = if a1 == markers_info[i].a1 && a2 == markers_info[i].a1 		# Homozygous wildtype
-					BiallelicVariant(markers_info[i],0)
-				elseif a1 == markers_info[i].a2 && a2 == markers_info[i].a2		# Homozygous variant 
-					BiallelicVariant(markers_info[i],2)
-				elseif (a1!=a2) && (a1 == markers_info[i].a1) && (a2 == markers_info[i].a2)
-					BiallelicVariant(markers_info[i],1)
-				elseif (a1!=a2) && (a1 == markers_info[i].a2) && (a2 == markers_info[i].a1)
-					BiallelicVariant(markers_info[i],1)
-				else # in case of invalid or missing variant
-					BiallelicVariant(markers_info[i],-9)
-				end
+				genoint = a1=="0" ? -9 : a1!=a2 ? 1 : a1==markers_info[i].a1 ? 0 : 2
+				genotype = BiallelicVariant(markers_info[i],genoint)
 
 				if length(markers) < i
 					push!(markers,DataArray{BiallelicVariant,1}[])
@@ -433,7 +434,7 @@ function dataframe(p::PlinkFile)
 	return df
 end
 
-function byte_to_geno(byte)
+function byte_to_geno(byte) 
 	map(0:3) do pos
 		(byte >> (2*pos)) & 3
 	end
@@ -442,11 +443,11 @@ end
 
 function readplink(p::PlinkBinaryFile)
 	markers_info = bim_readfile(p.bim)
-	println(string("read bim file ",p.bim, " - expecting ", length(markers_info), " variants"))
 	fam = fam_readfile(p.fam)
-	println(string("read fam file ",p.bim, " - expecting ", nrow(fam), " individuals"))
 	markers = Array{DataArray{BiallelicVariant,1},1}()
 	
+	println(markers_info)
+
 	# The first three bytes should be 0x6c, 0x1b, and 0x01 in that order. 
 	bed=open(p.bed,"r")
 	magic = readbytes(bed,3)
